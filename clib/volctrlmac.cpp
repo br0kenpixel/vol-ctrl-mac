@@ -13,7 +13,7 @@
  * very little to no information on how to use CoreAudio.
  *
  *
- * Copyright (c) 2022 Fábián Varga
+ * Copyright (c) 2022 Fábián Varga (br0kenpixel)
 */
 
 #include <CoreAudio/CoreAudio.h>
@@ -59,20 +59,38 @@ AudioDeviceID defaultOutputDeviceID = 0;                //ID of the default outp
 std::vector<int> validChannelsForDefaultDevice = {};    //List of valid channels for the default output device
 bool initialized = false;                               //Just to know wheather we got the default device ID
 
+/**
+ * Check if the library is initialized.
+ *
+ * @result - bool wheather the library is initialized or not
+ */
 extern "C" bool isInitialized(){
     return initialized;
 }
 
+/**
+ * Get a list of valid channels for the default output device.
+ * If deviceID is NULL, it will be set to the default output device.
+ *
+ * @param deviceID - output device
+ * @param maxFailures - number of errors after which the scan is stopped
+ * @result - list (vector) of valid channels
+ */
 std::vector<int> getValidChannels(AudioDeviceID *deviceID = NULL, int maxFailures = 3){
     std::vector<int> validChannels = {};
     if(deviceID == NULL) deviceID = &defaultOutputDeviceID;
 
+    //During the check we'll be trying to see if the channel has a
+    //volume level property
     AudioObjectPropertyAddress propertyAddress = properties::volume;
 
     int channel = 0, errors = 0;
     while(errors < maxFailures){
+        //Cycle trough channels until the last [maxFailures] channels
+        //are invalid
         propertyAddress.mElement = channel;
         if(AudioObjectHasProperty(*deviceID, &propertyAddress)){
+            //Channel is valid, add it to the list
             validChannels.push_back(channel);
         } else errors++;
         channel++;
@@ -80,25 +98,49 @@ std::vector<int> getValidChannels(AudioDeviceID *deviceID = NULL, int maxFailure
     return validChannels;
 }
 
+/**
+ * Initialize the library.
+ *
+ * @result - bool wheather the library was initialized successfully
+ */
 extern "C" bool init(){
     UInt32 dataSize = sizeof(AudioDeviceID);
+    //Find the default output device
     OSStatus result = AudioObjectGetPropertyData(kAudioObjectSystemObject,
                                                  &properties::defaultOutputDevice,
                                                  0, NULL,
                                                  &dataSize, &defaultOutputDeviceID);
     if(result != kAudioHardwareNoError) return false;
+
+    //Get a list of valid channels
     validChannelsForDefaultDevice = getValidChannels(&defaultOutputDeviceID);
     if(validChannelsForDefaultDevice.size() == 0) return false;
     initialized = true;
     return initialized;
 }
 
+/**
+ * Deinitialize the library.
+ */
 extern "C" void deinit(){
     defaultOutputDeviceID = 0;
     validChannelsForDefaultDevice = {};
     initialized = false;
 }
 
+/**
+ * Set a property of the default output device.
+ * This function is universal, thus it can be used to
+ * set volume level or set the mute state.
+ * 
+ * This is an internal function, which will not be
+ * accessible from Python.
+ *
+ * @param data - buffer to read from (value to set)
+ * @param propertyAddr - address of the property
+ * @param channels - list of valid channels
+ * @result - wheather the set failed or succeeded
+ */
 template <typename UniversalDataType>
 bool setProperty(UniversalDataType data, AudioObjectPropertyAddress propertyAddr, std::vector<int> channels = validChannelsForDefaultDevice){
     UInt32 dataSize = sizeof(data);
@@ -117,6 +159,19 @@ bool setProperty(UniversalDataType data, AudioObjectPropertyAddress propertyAddr
     return !error;
 }
 
+/**
+ * Get the value of a property of the default output device.
+ * This function is universal, thus it can be used to
+ * get the volume level or get the mute state.
+ * 
+ * This is an internal function, which will not be
+ * accessible from Python.
+ *
+ * @param buffer - buffer to write to (should be a vector)
+ * @param propertyAddr - address of the property
+ * @param channels - list of valid channels
+ * @result - wheather the set failed or succeeded
+ */
 template <typename UniversalDataType>
 bool getProperty(std::vector<UniversalDataType> &buffer, AudioObjectPropertyAddress propertyAddr, std::vector<int> channels = validChannelsForDefaultDevice){
     UniversalDataType data;
@@ -145,11 +200,25 @@ bool getProperty(std::vector<UniversalDataType> &buffer, AudioObjectPropertyAddr
     return true;
 }
 
+/**
+ * Set the volume level of the default output device.
+ *
+ * @param volume_in_percent - volume level (0-100)
+ * @result - wheather the set failed or succeeded
+ */
 extern "C" bool setVolume(int volume_in_percent){
     Float32 volume = Float32(volume_in_percent) / 100;
     return setProperty(volume, properties::volume);
 }
 
+/**
+ * Get the volume level of the default output device.
+ * If the output device has multiple channels and they
+ * are set to a different volume level then the
+ * averrage is returned.
+ *
+ * @result - volume level (0-100%)
+ */
 extern "C" int getVolume(){
     std::vector<Float32> volumes;
     bool error = !getProperty(volumes, properties::volume);
@@ -160,19 +229,45 @@ extern "C" int getVolume(){
     return x;
 }
 
+/**
+ * Set the mute state of the default output device.
+ * 
+ * @param state - muted/unmuted (1/0)
+ * @result - wheather the set failed or succeeded
+ */
 extern "C" bool setMute(bool state){
     //Sometimes we have to use channel 0, idk why                                                              v
     return setProperty((UInt32)state, properties::mute) ? true : setProperty((UInt32)state, properties::mute, {0});
 }
 
+/**
+ * Mute the audio output of the default device.
+ * This is an alias to setMute(true).
+ * 
+ * @result - wheather the set failed or succeeded
+ */
 extern "C" bool mute(){
     return setMute(true);
 }
 
+/**
+ * Unmute the audio output of the default device.
+ * This is an alias to setMute(false).
+ * 
+ * @result - wheather the set failed or succeeded
+ */
 extern "C" bool unmute(){
     return setMute(false);
 }
 
+/**
+ * Get the mute state of the default output device.
+ * If the output device has multiple channels and they
+ * are not all muted/unmuted then the mute state of the
+ * last channel is returned.
+ *
+ * @result - mute state (0/1)
+ */
 extern "C" int getMute(){
     //Warning: Do NOT use bool vector, must be int!
     std::vector<int> muteStates;
@@ -190,7 +285,8 @@ extern "C" int getMute(){
 
 #ifndef COMPILE_FOR_PYTHON
 
-//Demo
+/* DEMO CODE  */
+
 int main(){
     cout << "Welcome" << endl;
     cout << "Initializing Apple CoreAudio..." << endl;
